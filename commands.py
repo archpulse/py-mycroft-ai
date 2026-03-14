@@ -26,7 +26,7 @@ _http_session.headers.update(
 def open_website(url: str):
     """Opens the specified URL or website in the browser."""
     webbrowser.open(url)
-    return f"Открываю ссылку: {url}"
+    return f"Opening link: {url}"
 
 
 def run_app(app_name: str):
@@ -72,17 +72,17 @@ def run_app(app_name: str):
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-            return f"Приложение {app_name} запущено."
+            return f"Application {app_name} launched."
         except Exception as e:
-            return f"Ошибка запуска {app_name}: {e}"
+            return f"Error launching {app_name}: {e}"
     else:
         # Application not found - look for a web alternative
         if app_lower in web_alternatives:
             url = web_alternatives[app_lower]
             webbrowser.open(url)
-            return f"Приложение {app_name} не установлено на компьютере. Открываю веб-версию в браузере: {url}. Что вы хотите сделать дальше?"
+            return f"Application {app_name} is not installed locally. Opening web version in browser: {url}. What would you like to do next?"
         else:
-            return f"Приложение {app_name} не найдено на компьютере и веб-версия недоступна."
+            return f"Application {app_name} not found locally and no web version is available."
 
 
 # ----------------------------
@@ -121,11 +121,11 @@ def internet_research(query: str):
         if r.status_code == 200:
             snippets = re.findall(r'class="result__snippet"[^>]*>([^<]+)<', r.text)
             if snippets:
-                return f"Результат: {snippets[0]}"
+                return f"Result: {snippets[0]}"
     except Exception as e:
         print(f"HTML search error: {e}")
 
-    return f"К сожалению, поиск временно недоступен. Попробуйте позже или переформулируйте запрос: {query}"
+    return f"Unfortunately, search is temporarily unavailable. Please try again later or rephrase your query: {query}"
 
 
 def get_news(city: str):
@@ -140,13 +140,13 @@ def get_weather(city: str):
         if r.status_code == 200:
             return r.text.strip()
         else:
-            return f"Сервис погоды вернул ошибку (код {r.status_code})"
+            return f"Weather service returned an error (code {r.status_code})"
     except requests.exceptions.Timeout:
-        return "Превышено время ожидания ответа от сервера погоды"
+        return "Weather server response timeout exceeded"
     except requests.exceptions.ConnectionError:
-        return "Нет подключения к интернету. Проверьте соединение."
+        return "No internet connection. Please check your network."
     except Exception as e:
-        return f"Ошибка получения погоды: {e}"
+        return f"Error fetching weather: {e}"
 
 
 # ----------------------------
@@ -158,7 +158,7 @@ def get_system_stats():
     """Returns current CPU and RAM usage."""
     cpu = psutil.cpu_percent(interval=0.1)  # Reduced interval for speed
     mem = psutil.virtual_memory().percent
-    return f"Статус системы: CPU: {cpu}%, RAM: {mem}%"
+    return f"System status: CPU: {cpu}%, RAM: {mem}%"
 
 
 # ----------------------------
@@ -169,19 +169,19 @@ def get_system_stats():
 def media_play_pause():
     """Toggles playback (pause/start)."""
     pyautogui.press("playpause")
-    return "Медиа: Воспроизведение/Пауза"
+    return "Media: Play/Pause"
 
 
 def media_next():
     """Switches to the next track."""
     pyautogui.press("nexttrack")
-    return "Медиа: Следующий трек"
+    return "Media: Next track"
 
 
 def media_prev():
     """Switches to the previous track."""
     pyautogui.press("prevtrack")
-    return "Медиа: Предыдущий трек"
+    return "Media: Previous track"
 
 
 def set_volume(action: str):
@@ -190,7 +190,7 @@ def set_volume(action: str):
         pyautogui.press("volumeup", presses=5)
     else:
         pyautogui.press("volumedown", presses=5)
-    return f"Громкость изменена: {action}"
+    return f"Volume changed: {action}"
 
 
 # ----------------------------
@@ -437,12 +437,12 @@ def capture_screen():
 
 def roll_dice():
     """Rolls a die."""
-    return f"Выпало число: 🎲 {random.randint(1, 6)}"
+    return f"Dice roll result: 🎲 {random.randint(1, 6)}"
 
 
 def coin_flip():
     """Flips a coin."""
-    return "🪙 Результат: Орёл" if random.random() > 0.5 else "🪙 Результат: Решка"
+    return "🪙 Result: Heads" if random.random() > 0.5 else "🪙 Result: Tails"
 
 
 def play_music(query: str):
@@ -484,9 +484,9 @@ def play_music(query: str):
         webbrowser.open(
             f"https://www.youtube.com/results?search_query={actual_track.replace(' ', '+')}+official"
         )
-        return f"Открываю: {actual_track}"
+        return f"Opening: {actual_track}"
     except Exception as e:
-        return f"Ошибка: {e}"
+        return f"Error: {e}"
 
 
 def play_on_spotify(query: str):
@@ -516,9 +516,9 @@ def play_on_spotify(query: str):
         webbrowser.open(
             f"https://open.spotify.com/search/{actual_track.replace(' ', '%20')}"
         )
-        return f"Открываю Spotify: {actual_track}"
+        return f"Opening Spotify: {actual_track}"
     except Exception as e:
-        return f"Ошибка: {e}"
+        return f"Error: {e}"
 
 
 # ----------------------------
@@ -550,9 +550,9 @@ def save_memory(category: str, key: str, value: str):
         )
         conn.commit()
         conn.close()
-        return f"✅ Запомнил: {key} = {value}"
+        return f"✅ Remembered: {key} = {value}"
     except Exception as e:
-        return f"Ошибка сохранения: {e}"
+        return f"Error saving memory: {e}"
 
 
 def get_memory(category: str, key: str):
@@ -569,14 +569,14 @@ def get_memory(category: str, key: str):
         conn.close()
         if row:
             return f"{key}: {row[0]}"
-        return f"Не помню информацию о {key}"
+        return f"I do not remember information about {key}"
     except Exception as e:
-        return f"Ошибка чтения памяти: {e}"
+        return f"Error reading memory: {e}"
 
 
 def standby_mode():
     """CRITICAL: Call this function IMMEDIATELY if the user says 'dialog finished', 'bye', 'hang up', or wants to end the conversation. This is the only way to go to sleep."""
-    return "Система переведена в режим ожидания."
+    return "System switched to standby mode."
 
 
 # ----------------------------

@@ -64,20 +64,20 @@ def load_dynamic_plugins(plugins_dir="plugins"):
             filepath = os.path.join(plugins_dir, filename)
 
             try:
-                # Динамическая загрузка питоновского файла как модуля
+                # Dynamic loading of the python file as a module
                 spec = importlib.util.spec_from_file_location(module_name, filepath)
                 module = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(module)
 
-                # Ищем точку входа в плагин
+                # Looking for the plugin entry point
                 if hasattr(module, "register_plugin"):
-                    # Плагин возвращает свои инструменты и маппинг
+                    # Plugin returns its tools and mapping
                     t_list, t_map = module.register_plugin()
                     dynamic_tools_list.extend(t_list)
                     dynamic_tools_mapping.update(t_map)
-                    print(f"📦 Плагин загружен: {module_name}")
+                    print(f"📦 Plugin loaded: {module_name}")
             except Exception as e:
-                print(f"❌ Ошибка загрузки плагина {module_name}: {e}")
+                print(f"❌ Error loading plugin {module_name}: {e}")
 
     return dynamic_tools_list, dynamic_tools_mapping
 
