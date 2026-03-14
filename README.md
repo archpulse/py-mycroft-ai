@@ -41,9 +41,13 @@ Set your Google Gemini API Key in the UI settings or create a .env file:
 GOOGLE_API_KEY=your_api_key_here
 Run the core:
 
+
 python main.py
+
+
 🧩 How to Write a Plugin
 Creating a skill for Mycroft is incredibly simple. Just write a standalone .py file with your functions and a register_plugin() entry point.
 Add the pymycroft-plugin topic to your GitHub repo, and the assistant will find it automatically!
+
 
 (Check the plugins/ folder for examples).
