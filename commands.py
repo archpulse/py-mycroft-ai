@@ -95,7 +95,7 @@ def internet_research(query: str):
     # Attempt 1: DuckDuckGo
     try:
         with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=3, timeout=10))
+            results = list(ddgs.text(query, max_results=3))
         if results:
             return "\n".join(
                 f"{i}. {r['title']}: {r['body']}" for i, r in enumerate(results, 1)

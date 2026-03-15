@@ -7,18 +7,13 @@ import multiprocessing
 import os
 import queue
 import random
+import re
 import sqlite3
 import sys
 import threading
 
-import numpy as np
-import openwakeword
-import pyaudio
 import qdarktheme
 from dotenv import load_dotenv
-from google import genai
-from google.genai.types import FunctionResponse, Part
-from openwakeword.model import Model
 from PyQt6.QtCore import QPointF, QRectF, Qt, QThread, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import (
     QBrush,
@@ -50,8 +45,21 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+_PLUGIN_CACHE = {}
+
+
+def isolated_runner(f, kwargs, q):
+    try:
+        q.put(("OK", f(**kwargs)))
+    except Exception as exc:
+        q.put(("ERROR", str(exc)))
+
 
 def load_dynamic_plugins(plugins_dir="plugins"):
+
+    import importlib.util
+    import os
+
     dynamic_tools_list = []
     dynamic_tools_mapping = {}
 
@@ -64,60 +72,43 @@ def load_dynamic_plugins(plugins_dir="plugins"):
             filepath = os.path.join(plugins_dir, filename)
 
             try:
-                # Dynamic loading of the python file as a module
+                mtime = os.path.getmtime(filepath)
+
+                # ИСПОЛЬЗУЕМ КЭШ: Если файл не менялся, берем готовые функции из памяти
+                if (
+                    filepath in _PLUGIN_CACHE
+                    and _PLUGIN_CACHE[filepath]["mtime"] == mtime
+                ):
+                    cached_data = _PLUGIN_CACHE[filepath]
+                    dynamic_tools_list.extend(cached_data["tools"])
+                    dynamic_tools_mapping.update(cached_data["mapping"])
+                    continue
+
+                # Иначе загружаем (или перечитываем) модуль
                 spec = importlib.util.spec_from_file_location(module_name, filepath)
                 module = importlib.util.module_from_spec(spec)
+                import sys
+
+                sys.modules[module_name] = module
                 spec.loader.exec_module(module)
 
-                # Looking for the plugin entry point
                 if hasattr(module, "register_plugin"):
-                    # Plugin returns its tools and mapping
                     t_list, t_map = module.register_plugin()
+
+                    _PLUGIN_CACHE[filepath] = {
+                        "mtime": mtime,
+                        "tools": t_list,
+                        "mapping": t_map,
+                    }
+
                     dynamic_tools_list.extend(t_list)
                     dynamic_tools_mapping.update(t_map)
-                    print(f"📦 Plugin loaded: {module_name}")
+                    print(f"📦 Plugin loaded/updated: {module_name}")
             except Exception as e:
                 print(f"❌ Error loading plugin {module_name}: {e}")
 
     return dynamic_tools_list, dynamic_tools_mapping
 
-
-try:
-    from commands import (
-        TOOLS_LIST,
-        TOOLS_MAPPING,
-        WAITING_PHRASES,
-        get_city_time_info,
-        get_random_waiting_phrase,
-    )
-except ImportError:
-    TOOLS_LIST = []
-    TOOLS_MAPPING = {}
-    WAITING_PHRASES = {"EN": ["One moment..."]}
-
-    try:
-        from main import load_dynamic_plugins
-
-        dyn_tools, dyn_mapping = load_dynamic_plugins()
-        TOOLS_LIST.extend(dyn_tools)
-        TOOLS_MAPPING.update(dyn_mapping)
-    except Exception:
-        pass
-
-    def get_city_time_info(city):
-        return {"hour": 12, "period": "day", "formatted_time": "12:00", "city": city}
-
-    def get_random_waiting_phrase(lang="EN"):
-        return "One moment..."
-
-    print("⚠️ Warning: commands.py not found. Tools disabled.")
-
-try:
-    dyn_tools, dyn_mapping = load_dynamic_plugins()
-    TOOLS_LIST.extend(dyn_tools)
-    TOOLS_MAPPING.update(dyn_mapping)
-except Exception as e:
-    print(f"Warning: Failed to load dynamic plugins: {e}")
 
 load_dotenv()
 CURRENT_API_KEY = os.getenv("GOOGLE_API_KEY")
@@ -690,6 +681,61 @@ def ai_process_worker(
 
         WAITING_PHRASES = {"EN": ["One moment..."]}
 
+    # Language helpers used across the voice loop
+    LANGUAGE_LABELS = {
+        "EN": "English",
+        "RU": "Russian",
+        "UA": "Ukrainian",
+        "JA": "Japanese",
+    }
+
+    def detect_language_from_transcript(text: str) -> str:
+        if not text:
+            return "EN"
+        text = text.strip()
+        text_lower = text.lower()
+
+        for ch in text:
+            code = ord(ch)
+            if (0x3040 <= code <= 0x30FF) or (0x4E00 <= code <= 0x9FFF):
+                return "JA"
+
+        if re.search(
+            r"\b(доброго|привiт|привіт|дякую|будь ласка|що|це|чому)\b", text_lower
+        ):
+            return "UA"
+        if re.search(r"[іїєґІЇЄҐ]", text):
+            return "UA"
+        if re.search(r"[ыъэёЫЪЭЁ]", text):
+            return "RU"
+        if re.search(r"[А-Яа-яЁё]", text):
+            return "RU"
+        return "EN"
+
+    SAFE_DIRECT_TOOLS = {
+        "get_weather",
+        "internet_research",
+        "get_news",
+        "get_system_stats",
+        "get_city_time_info",
+        "save_memory",
+        "get_memory",
+    }
+
+    user_language_hint = "EN"
+
+    async def execute_tool(func, args, name):
+        if inspect.iscoroutinefunction(func):
+            return await func(**args)
+        if name in SAFE_DIRECT_TOOLS:
+            return func(**args)
+        try:
+            return await asyncio.wait_for(asyncio.to_thread(func, **args), timeout=18)
+        except asyncio.TimeoutError:
+            return "Error: Plugin execution timed out (Thread killed)"
+        except Exception as exc:
+            return f"Error inside plugin: {exc}"
+
     try:
         from main import load_dynamic_plugins
 
@@ -724,11 +770,34 @@ def ai_process_worker(
         current_hour = time_info["hour"]
         time_period = time_info["period"]
 
-        tone_instruction = f"=== TONE ===\nIt's {time_period} for the user ({current_hour}:00). Speak naturally."
-        waiting_examples = WAITING_PHRASES.get(
-            "RU", WAITING_PHRASES.get("EN", ["One moment..."])
+        # Важно: язык ответа должен соответствовать речи пользователя,
+        # а не языку интерфейса настроек.
+        tone_instruction = (
+            f"=== TONE ===\nIt's {time_period} for the user ({current_hour}:00). "
+            "Detect the language of the user's speech and reply using that exact language. "
+            "Only switch to Russian when the user is speaking Russian."
         )
+
+        def current_waiting_phrases():
+            lang_key = (
+                user_language_hint if user_language_hint in WAITING_PHRASES else "EN"
+            )
+            return WAITING_PHRASES.get(
+                lang_key, WAITING_PHRASES.get("EN", ["One moment..."])
+            )
+
+        waiting_examples = current_waiting_phrases()
         waiting_examples_str = ", ".join([f'"{p}"' for p in waiting_examples[:8]])
+
+        language_guidance = """=== RULE 5: LANGUAGE (CRITICAL) ===\n"""
+        language_guidance += (
+            "Detect the user's speech language and respond only in that language.\n"
+            "- If the user speaks English, answer in English; do not revert to Russian.\n"
+            "- If the user speaks Ukrainian, answer in Ukrainian.\n"
+            "- If the user speaks Japanese, answer in Japanese.\n"
+            '- Only speak Russian when the user is speaking Russian. When you do, always use masculine verbs/adjectives such as "я сделал", "я нашел", "я готов".\n'
+            "- Ignore any Russian examples that do not match the user's current speech."
+        )
 
         sys_instruction = f"""IDENTITY: You are Py mycroft 2.0, a MALE AI voice assistant based on Arch Linux.
 GENDER (CRITICAL): MALE (Мужской). When speaking Russian, you MUST ALWAYS refer to yourself in the masculine gender. Use masculine verbs and adjectives (e.g., say "я сделал", "я нашел", "я готов", NEVER "сделала", "нашла", or "готова").
@@ -758,9 +827,7 @@ Use `save_memory` for long-term facts. Check memory first!
 - Open app -> run_app(name)
 - Time in city -> get_city_time_info(city)
 
-=== RULE 5: LANGUAGE ===
-You MUST reply in the EXACT same language the user is speaking right now. If the user speaks English, speak English. Ignore any Russian text in your instructions if the user speaks English.
-
+{language_guidance}
 === RULE 6: VISION & SCREENSHOTS ===
 When using `capture_screen`, the frames are pushed to your visual stream.
 DO NOT GUESS! DO NOT INVENT! Look at the actual images. Describe strictly what you see (e.g., a YouTube video, a movie, a code editor). If you cannot see anything, honestly admit it.
@@ -825,6 +892,35 @@ DO NOT GUESS! DO NOT INVENT! Look at the actual images. Describe strictly what y
             # 🔴 INNER RING (ACTIVE Mode - Dialog)
             # ==========================================
             while True:
+                # HOT-RELOAD PLUGINS ON THE FLY
+                try:
+                    import importlib
+                    import sys
+
+                    if "commands" in sys.modules:
+                        import commands
+
+                        importlib.reload(commands)
+                        current_tools = list(commands.TOOLS_LIST)
+                        current_mapping = dict(commands.TOOLS_MAPPING)
+                    else:
+                        from commands import TOOLS_LIST as current_tools
+                        from commands import TOOLS_MAPPING as current_mapping
+
+                        current_tools = list(current_tools)
+                        current_mapping = dict(current_mapping)
+
+                    from main import load_dynamic_plugins
+
+                    dyn_tools, dyn_mapping = load_dynamic_plugins()
+                    current_tools.extend(dyn_tools)
+                    current_mapping.update(dyn_mapping)
+
+                    config["tools"] = current_tools
+                    TOOLS_MAPPING = current_mapping  # update local ref
+                except Exception as e:
+                    ui_events_queue.put(("log", f"❌ Plugin reload error: {e}"))
+
                 restart_session = False
                 try:
                     ui_events_queue.put(("log", "🔗 Connecting to Gemini..."))
@@ -857,9 +953,30 @@ DO NOT GUESS! DO NOT INVENT! Look at the actual images. Describe strictly what y
                                     break
 
                         async def receive_cloud():
-                            nonlocal restart_session
+                            nonlocal restart_session, user_language_hint
                             try:
                                 async for response in session.receive():
+                                    if (
+                                        response.server_content
+                                        and response.server_content.input_transcription
+                                        and response.server_content.input_transcription.text
+                                    ):
+                                        transcript_text = response.server_content.input_transcription.text
+                                        detected_lang = detect_language_from_transcript(
+                                            transcript_text
+                                        )
+                                        if detected_lang != user_language_hint:
+                                            user_language_hint = detected_lang
+                                            lang_label = LANGUAGE_LABELS.get(
+                                                detected_lang, detected_lang
+                                            )
+                                            ui_events_queue.put(
+                                                (
+                                                    "log",
+                                                    f"🗣️ Detected user language: {lang_label}",
+                                                )
+                                            )
+
                                     if response.tool_call:
                                         ui_events_queue.put(("status", "processing"))
                                         for fc in response.tool_call.function_calls:
@@ -881,16 +998,9 @@ DO NOT GUESS! DO NOT INVENT! Look at the actual images. Describe strictly what y
                                                 )
                                                 func = TOOLS_MAPPING[name]
                                                 try:
-                                                    if inspect.iscoroutinefunction(
-                                                        func
-                                                    ):
-                                                        result = await func(**args)
-                                                    else:
-                                                        result = (
-                                                            await asyncio.to_thread(
-                                                                lambda: func(**args)
-                                                            )
-                                                        )
+                                                    result = await execute_tool(
+                                                        func, args, name
+                                                    )
                                                 except Exception as e:
                                                     result = f"Error: {e}"
 
@@ -952,6 +1062,21 @@ DO NOT GUESS! DO NOT INVENT! Look at the actual images. Describe strictly what y
                                                         )
                                                     ]
                                                 )
+
+                                                # HOT RELOAD PLUGINS IF INSTALLED
+                                                if (
+                                                    name == "install_plugin"
+                                                    and isinstance(result, str)
+                                                    and "SUCCESS" in result
+                                                ):
+                                                    ui_events_queue.put(
+                                                        (
+                                                            "log",
+                                                            "♻️ Hot-reloading AI session to apply new plugin...",
+                                                        )
+                                                    )
+                                                    return  # This breaks the inner loop safely, it will reconnect with new tools
+
                                     elif (
                                         response.server_content
                                         and response.server_content.model_turn
@@ -1264,210 +1389,71 @@ class SettingsDialog(QDialog):
         self.resize(450, 400)
         self.setWindowTitle("Settings")
 
+        # Store references for dynamic translation
+        self.translatable_labels = []
+
         # Adaptive styles based on current theme
         if parent.current_theme == "light":
             self.setStyleSheet("""
                 QDialog { background-color: #f0f4f8; color: #1a1a1a; }
-                QPushButton.tab_btn {
-                    background: transparent;
-                    color: #666;
-                    border: none;
-                    border-radius: 8px;
-                    padding: 12px;
-                    font-size: 20px;
-                }
-                QPushButton.tab_btn:hover {
-                    background: #e0e4e8;
-                    color: #333;
-                }
-                QPushButton.tab_btn[selected="true"] {
-                    background: #3498db;
-                    color: #fff;
-                }
+                QPushButton.tab_btn { background: transparent; color: #666; border: none; border-radius: 8px; padding: 12px; font-size: 20px; }
+                QPushButton.tab_btn:hover { background: #e0e4e8; color: #333; }
+                QPushButton.tab_btn[selected="true"] { background: #3498db; color: #fff; }
                 QLabel { color: #555; font-size: 12px; }
                 QLabel#section_title { color: #1a1a1a; font-size: 14px; font-weight: bold; margin-bottom: 10px; }
-                QComboBox {
-                    background: #ffffff;
-                    border: 1px solid #cbd5e1;
-                    color: #1a1a1a;
-                    padding: 8px 12px;
-                    border-radius: 6px;
-                    min-height: 20px;
-                }
+                QComboBox { background: #ffffff; border: 1px solid #cbd5e1; color: #1a1a1a; padding: 8px 12px; border-radius: 6px; min-height: 20px; }
                 QComboBox::drop-down { border: none; width: 30px; }
                 QComboBox::down-arrow { image: none; border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 6px solid #64748b; }
-                QComboBox QAbstractItemView {
-                    background: #ffffff;
-                    color: #1a1a1a;
-                    selection-background-color: #3498db;
-                    selection-color: white;
-                    border: 1px solid #cbd5e1;
-                }
-                QLineEdit {
-                    background: #ffffff;
-                    border: 1px solid #cbd5e1;
-                    color: #0066cc;
-                    padding: 8px 12px;
-                    border-radius: 6px;
-                }
+                QComboBox QAbstractItemView { background: #ffffff; color: #1a1a1a; selection-background-color: #3498db; selection-color: white; border: 1px solid #cbd5e1; }
+                QLineEdit { background: #ffffff; border: 1px solid #cbd5e1; color: #0066cc; padding: 8px 12px; border-radius: 6px; }
                 QCheckBox { color: #555; spacing: 8px; }
                 QCheckBox::indicator { width: 18px; height: 18px; border-radius: 4px; border: 2px solid #94a3b8; background: #ffffff; }
                 QCheckBox::indicator:checked { background: #3498db; border-color: #3498db; }
-                QPushButton#save_btn {
-                    background: #3498db;
-                    color: white;
-                    border: none;
-                    padding: 12px 24px;
-                    font-weight: bold;
-                    border-radius: 8px;
-                    font-size: 13px;
-                }
+                QPushButton#save_btn { background: #3498db; color: white; border: none; padding: 12px 24px; font-weight: bold; border-radius: 8px; font-size: 13px; }
                 QPushButton#save_btn:hover { background: #2980b9; }
-                QPushButton#support_btn {
-                    background: transparent;
-                    color: #e74c3c;
-                    border: 2px solid #e74c3c;
-                    padding: 10px 20px;
-                    font-weight: bold;
-                    border-radius: 8px;
-                }
+                QPushButton#support_btn { background: transparent; color: #e74c3c; border: 2px solid #e74c3c; padding: 10px 20px; font-weight: bold; border-radius: 8px; }
                 QPushButton#support_btn:hover { background: #e74c3c; color: white; }
             """)
         elif parent.current_theme == "gray":
             self.setStyleSheet("""
                 QDialog { background-color: #4a4a4a; color: #e0e0e0; }
-                QPushButton.tab_btn {
-                    background: transparent;
-                    color: #999;
-                    border: none;
-                    border-radius: 8px;
-                    padding: 12px;
-                    font-size: 20px;
-                }
-                QPushButton.tab_btn:hover {
-                    background: #555;
-                    color: #ccc;
-                }
-                QPushButton.tab_btn[selected="true"] {
-                    background: #3498db;
-                    color: #fff;
-                }
+                QPushButton.tab_btn { background: transparent; color: #999; border: none; border-radius: 8px; padding: 12px; font-size: 20px; }
+                QPushButton.tab_btn:hover { background: #555; color: #ccc; }
+                QPushButton.tab_btn[selected="true"] { background: #3498db; color: #fff; }
                 QLabel { color: #bbb; font-size: 12px; }
                 QLabel#section_title { color: #fff; font-size: 14px; font-weight: bold; margin-bottom: 10px; }
-                QComboBox {
-                    background: #3a3a3a;
-                    border: 1px solid #666;
-                    color: white;
-                    padding: 8px 12px;
-                    border-radius: 6px;
-                    min-height: 20px;
-                }
+                QComboBox { background: #3a3a3a; border: 1px solid #666; color: white; padding: 8px 12px; border-radius: 6px; min-height: 20px; }
                 QComboBox::drop-down { border: none; width: 30px; }
                 QComboBox::down-arrow { image: none; border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 6px solid #aaa; }
-                QComboBox QAbstractItemView {
-                    background: #3a3a3a;
-                    color: white;
-                    selection-background-color: #3498db;
-                    selection-color: white;
-                    border: 1px solid #666;
-                }
-                QLineEdit {
-                    background: #3a3a3a;
-                    border: 1px solid #666;
-                    color: #00ffcc;
-                    padding: 8px 12px;
-                    border-radius: 6px;
-                }
+                QComboBox QAbstractItemView { background: #3a3a3a; color: white; selection-background-color: #3498db; selection-color: white; border: 1px solid #666; }
+                QLineEdit { background: #3a3a3a; border: 1px solid #666; color: #00ffcc; padding: 8px 12px; border-radius: 6px; }
                 QCheckBox { color: #bbb; spacing: 8px; }
                 QCheckBox::indicator { width: 18px; height: 18px; border-radius: 4px; border: 2px solid #777; background: #3a3a3a; }
                 QCheckBox::indicator:checked { background: #3498db; border-color: #3498db; }
-                QPushButton#save_btn {
-                    background: #3498db;
-                    color: white;
-                    border: none;
-                    padding: 12px 24px;
-                    font-weight: bold;
-                    border-radius: 8px;
-                    font-size: 13px;
-                }
+                QPushButton#save_btn { background: #3498db; color: white; border: none; padding: 12px 24px; font-weight: bold; border-radius: 8px; font-size: 13px; }
                 QPushButton#save_btn:hover { background: #2980b9; }
-                QPushButton#support_btn {
-                    background: transparent;
-                    color: #e74c3c;
-                    border: 2px solid #e74c3c;
-                    padding: 10px 20px;
-                    font-weight: bold;
-                    border-radius: 8px;
-                }
+                QPushButton#support_btn { background: transparent; color: #e74c3c; border: 2px solid #e74c3c; padding: 10px 20px; font-weight: bold; border-radius: 8px; }
                 QPushButton#support_btn:hover { background: #e74c3c; color: white; }
             """)
         else:
-            # Dark theme (default)
             self.setStyleSheet("""
                 QDialog { background-color: #1a1a1a; color: #e0e0e0; }
-                QPushButton.tab_btn {
-                    background: transparent;
-                    color: #666;
-                    border: none;
-                    border-radius: 8px;
-                    padding: 12px;
-                    font-size: 20px;
-                }
-                QPushButton.tab_btn:hover {
-                    background: #333;
-                    color: #aaa;
-                }
-                QPushButton.tab_btn[selected="true"] {
-                    background: #3498db;
-                    color: #fff;
-                }
+                QPushButton.tab_btn { background: transparent; color: #666; border: none; border-radius: 8px; padding: 12px; font-size: 20px; }
+                QPushButton.tab_btn:hover { background: #333; color: #aaa; }
+                QPushButton.tab_btn[selected="true"] { background: #3498db; color: #fff; }
                 QLabel { color: #aaa; font-size: 12px; }
                 QLabel#section_title { color: #fff; font-size: 14px; font-weight: bold; margin-bottom: 10px; }
-                QComboBox {
-                    background: #2a2a2a;
-                    border: 1px solid #444;
-                    color: white;
-                    padding: 8px 12px;
-                    border-radius: 6px;
-                    min-height: 20px;
-                }
+                QComboBox { background: #2a2a2a; border: 1px solid #444; color: white; padding: 8px 12px; border-radius: 6px; min-height: 20px; }
                 QComboBox::drop-down { border: none; width: 30px; }
                 QComboBox::down-arrow { image: none; border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 6px solid #888; }
-                QComboBox QAbstractItemView {
-                    background: #2a2a2a;
-                    color: white;
-                    selection-background-color: #3498db;
-                    selection-color: white;
-                    border: 1px solid #444;
-                }
-                QLineEdit {
-                    background: #2a2a2a;
-                    border: 1px solid #444;
-                    color: #00ffcc;
-                    padding: 8px 12px;
-                    border-radius: 6px;
-                }
+                QComboBox QAbstractItemView { background: #2a2a2a; color: white; selection-background-color: #3498db; selection-color: white; border: 1px solid #444; }
+                QLineEdit { background: #2a2a2a; border: 1px solid #444; color: #00ffcc; padding: 8px 12px; border-radius: 6px; }
                 QCheckBox { color: #aaa; spacing: 8px; }
                 QCheckBox::indicator { width: 18px; height: 18px; border-radius: 4px; border: 2px solid #555; background: #2a2a2a; }
                 QCheckBox::indicator:checked { background: #3498db; border-color: #3498db; }
-                QPushButton#save_btn {
-                    background: #3498db;
-                    color: white;
-                    border: none;
-                    padding: 12px 24px;
-                    font-weight: bold;
-                    border-radius: 8px;
-                    font-size: 13px;
-                }
+                QPushButton#save_btn { background: #3498db; color: white; border: none; padding: 12px 24px; font-weight: bold; border-radius: 8px; font-size: 13px; }
                 QPushButton#save_btn:hover { background: #2980b9; }
-                QPushButton#support_btn {
-                    background: transparent;
-                    color: #e74c3c;
-                    border: 2px solid #e74c3c;
-                    padding: 10px 20px;
-                    font-weight: bold;
-                    border-radius: 8px;
-                }
+                QPushButton#support_btn { background: transparent; color: #e74c3c; border: 2px solid #e74c3c; padding: 10px 20px; font-weight: bold; border-radius: 8px; }
                 QPushButton#support_btn:hover { background: #e74c3c; color: white; }
             """)
 
@@ -1475,12 +1461,9 @@ class SettingsDialog(QDialog):
         main_layout.setSpacing(16)
         main_layout.setContentsMargins(16, 16, 16, 16)
 
-        # Left sidebar with icon buttons
         sidebar = QVBoxLayout()
         sidebar.setSpacing(4)
 
-        t = TRANSLATIONS[parent.current_lang]
-        # Icons: brain/network, palette, gear, info
         tabs = [
             ("⚛", "tab_ai"),
             ("◐", "tab_appearance"),
@@ -1493,24 +1476,11 @@ class SettingsDialog(QDialog):
             btn = QPushButton(icon)
             btn.setFixedSize(48, 48)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setToolTip(t.get(key, key))
             btn.setProperty("selected", "true" if i == 0 else "false")
             btn.setStyleSheet("""
-                QPushButton {
-                    background: transparent;
-                    color: #666;
-                    border: none;
-                    border-radius: 8px;
-                    font-size: 22px;
-                }
-                QPushButton:hover {
-                    background: #333;
-                    color: #aaa;
-                }
-                QPushButton[selected="true"] {
-                    background: #3498db;
-                    color: #fff;
-                }
+                QPushButton { background: transparent; color: #666; border: none; border-radius: 8px; font-size: 22px; }
+                QPushButton:hover { background: #333; color: #aaa; }
+                QPushButton[selected="true"] { background: #3498db; color: #fff; }
             """)
             btn.clicked.connect(lambda checked, idx=i: self.switch_tab(idx))
             sidebar.addWidget(btn)
@@ -1519,7 +1489,6 @@ class SettingsDialog(QDialog):
         sidebar.addStretch()
         main_layout.addLayout(sidebar)
 
-        # Content area
         self.stack = QStackedWidget()
         main_layout.addWidget(self.stack, 1)
 
@@ -1528,37 +1497,51 @@ class SettingsDialog(QDialog):
         self.create_advanced_page()
         self.create_about_page()
 
+        self.update_ui_language(self.parent_win.current_lang)
+
+    def _create_label(self, key, is_title=False):
+        lbl = QLabel()
+        if is_title:
+            lbl.setObjectName("section_title")
+        self.translatable_labels.append((lbl, key))
+        return lbl
+
+    def _create_button(self, key, obj_name=None):
+        btn = QPushButton()
+        if obj_name:
+            btn.setObjectName(obj_name)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.translatable_labels.append((btn, key))
+        return btn
+
     def create_ai_page(self):
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setSpacing(16)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        t = TRANSLATIONS[self.parent_win.current_lang]
+        layout.addWidget(self._create_label("tab_ai", True))
 
-        title = QLabel(t.get("tab_ai", "Neural Network"))
-        title.setObjectName("section_title")
-        layout.addWidget(title)
-
-        layout.addWidget(QLabel(t.get("lbl_voice", "Voice Module")))
+        layout.addWidget(self._create_label("lbl_voice"))
         self.cb_voice = QComboBox()
         self.cb_voice.addItems(["Puck", "Charon", "Kore", "Fenrir", "Aoede"])
         self.cb_voice.setCurrentText(getattr(self.parent_win, "selected_voice", "Puck"))
         layout.addWidget(self.cb_voice)
 
-        layout.addWidget(QLabel(t.get("city_label", "Default City")))
+        layout.addWidget(self._create_label("city_label"))
         self.input_city = QLineEdit()
         self.input_city.setText(self.parent_win.default_city)
-        self.input_city.setPlaceholderText(t.get("city_placeholder", "Los Angeles"))
+        self.translatable_labels.append((self.input_city, "city_placeholder"))
         layout.addWidget(self.input_city)
 
-        layout.addWidget(QLabel(t.get("lbl_key", "API Key")))
+        layout.addWidget(self._create_label("lbl_key"))
         self.input_key = QLineEdit()
         self.input_key.setText(CURRENT_API_KEY if CURRENT_API_KEY else "")
         self.input_key.setEchoMode(QLineEdit.EchoMode.Password)
         layout.addWidget(self.input_key)
 
-        self.chk_show = QCheckBox(t.get("chk_show", "Show Key"))
+        self.chk_show = QCheckBox()
+        self.translatable_labels.append((self.chk_show, "chk_show"))
         self.chk_show.stateChanged.connect(
             lambda s: self.input_key.setEchoMode(
                 QLineEdit.EchoMode.Normal if s == 2 else QLineEdit.EchoMode.Password
@@ -1568,9 +1551,7 @@ class SettingsDialog(QDialog):
 
         layout.addStretch()
 
-        btn_save = QPushButton(t.get("btn_save", "Save"))
-        btn_save.setObjectName("save_btn")
-        btn_save.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_save = self._create_button("btn_save", "save_btn")
         btn_save.clicked.connect(self.save_and_close)
         layout.addWidget(btn_save)
 
@@ -1582,46 +1563,30 @@ class SettingsDialog(QDialog):
         layout.setSpacing(16)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        t = TRANSLATIONS[self.parent_win.current_lang]
+        layout.addWidget(self._create_label("tab_appearance", True))
 
-        title = QLabel(t.get("tab_appearance", "Appearance"))
-        title.setObjectName("section_title")
-        layout.addWidget(title)
-
-        layout.addWidget(QLabel(t.get("lbl_lang", "Language")))
+        layout.addWidget(self._create_label("lbl_lang"))
         self.cb_lang = QComboBox()
         self.cb_lang.addItems(list(TRANSLATIONS.keys()))
         self.cb_lang.setCurrentText(self.parent_win.current_lang)
         self.cb_lang.currentTextChanged.connect(self.update_ui_language)
         layout.addWidget(self.cb_lang)
 
-        layout.addWidget(QLabel(t.get("lbl_theme", "Theme")))
+        layout.addWidget(self._create_label("lbl_theme"))
         self.cb_theme = QComboBox()
-        # Use translated theme names
-        theme_translated = [
-            t.get("theme_dark", "Dark"),
-            t.get("theme_light", "Light"),
-            t.get("theme_gray", "Gray"),
-        ]
-        self.cb_theme.addItems(theme_translated)
-        # Map current theme to translated name
-        theme_to_translated = {
-            "dark": t.get("theme_dark", "Dark"),
-            "light": t.get("theme_light", "Light"),
-            "gray": t.get("theme_gray", "Gray"),
-        }
+        self.cb_theme.addItems(["Dark", "Light", "Gray"])
+
+        # Select current theme correctly mapping backwards
+        theme_rev = {"dark": "Dark", "light": "Light", "gray": "Gray"}
         self.cb_theme.setCurrentText(
-            theme_to_translated.get(
-                self.parent_win.current_theme, t.get("theme_dark", "Dark")
-            )
+            theme_rev.get(self.parent_win.current_theme, "Dark")
         )
+
         layout.addWidget(self.cb_theme)
 
         layout.addStretch()
 
-        btn_save = QPushButton(t.get("btn_save", "Save"))
-        btn_save.setObjectName("save_btn")
-        btn_save.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_save = self._create_button("btn_save", "save_btn")
         btn_save.clicked.connect(self.save_and_close)
         layout.addWidget(btn_save)
 
@@ -1633,21 +1598,16 @@ class SettingsDialog(QDialog):
         layout.setSpacing(16)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        t = TRANSLATIONS[self.parent_win.current_lang]
+        layout.addWidget(self._create_label("tab_advanced", True))
 
-        title = QLabel(t.get("tab_advanced", "Advanced"))
-        title.setObjectName("section_title")
-        layout.addWidget(title)
-
-        self.chk_dev = QCheckBox(t.get("lbl_dev", "Debug Mode"))
+        self.chk_dev = QCheckBox()
+        self.translatable_labels.append((self.chk_dev, "lbl_dev"))
         self.chk_dev.setChecked(self.parent_win.dev_mode)
         layout.addWidget(self.chk_dev)
 
         layout.addStretch()
 
-        btn_save = QPushButton(t.get("btn_save", "Save"))
-        btn_save.setObjectName("save_btn")
-        btn_save.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_save = self._create_button("btn_save", "save_btn")
         btn_save.clicked.connect(self.save_and_close)
         layout.addWidget(btn_save)
 
@@ -1659,14 +1619,11 @@ class SettingsDialog(QDialog):
         layout.setSpacing(16)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        t = TRANSLATIONS[self.parent_win.current_lang]
-
-        title = QLabel(t.get("about_title", "Py mycroft 2.0"))
-        title.setObjectName("section_title")
+        title = self._create_label("about_title", True)
         title.setStyleSheet("font-size: 20px;")
         layout.addWidget(title)
 
-        desc = QLabel(t.get("about_desc", "AI Voice Assistant"))
+        desc = self._create_label("about_desc")
         desc.setWordWrap(True)
         desc.setStyleSheet("color: #888; line-height: 1.6;")
         layout.addWidget(desc)
@@ -1677,9 +1634,7 @@ class SettingsDialog(QDialog):
 
         layout.addStretch()
 
-        btn_support = QPushButton(t.get("btn_support", "Support Project"))
-        btn_support.setObjectName("support_btn")
-        btn_support.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_support = self._create_button("btn_support", "support_btn")
         btn_support.clicked.connect(
             lambda: QDesktopServices.openUrl(
                 QUrl("https://www.patreon.com/c/archpulse/membership")
@@ -1691,16 +1646,33 @@ class SettingsDialog(QDialog):
 
     def switch_tab(self, index):
         self.stack.setCurrentIndex(index)
-        # Update button selection states
         for i, btn in enumerate(self.tab_buttons):
             btn.setProperty("selected", "true" if i == index else "false")
-            btn.setStyle(btn.style())  # Force style refresh
+            btn.setStyle(btn.style())
 
     def update_ui_language(self, lang):
+        self.setWindowTitle(
+            TRANSLATIONS.get(lang, TRANSLATIONS["EN"]).get("win_settings", "Settings")
+        )
         t = TRANSLATIONS.get(lang, TRANSLATIONS["EN"])
         keys = ["tab_ai", "tab_appearance", "tab_advanced", "tab_about"]
         for i, btn in enumerate(self.tab_buttons):
             btn.setToolTip(t.get(keys[i], keys[i]))
+
+        for widget, key in self.translatable_labels:
+            if isinstance(widget, QLineEdit):
+                widget.setPlaceholderText(t.get(key, key))
+            else:
+                widget.setText(t.get(key, key))
+
+        # Also update theme combobox text display without changing items keys
+        theme_names = [
+            t.get("theme_dark", "Dark"),
+            t.get("theme_light", "Light"),
+            t.get("theme_gray", "Gray"),
+        ]
+        for i, name in enumerate(theme_names):
+            self.cb_theme.setItemText(i, name)
 
     def save_and_close(self):
         global CURRENT_API_KEY
@@ -1708,16 +1680,16 @@ class SettingsDialog(QDialog):
         self.parent_win.current_lang = self.cb_lang.currentText()
         self.parent_win.dev_mode = self.chk_dev.isChecked()
         self.parent_win.default_city = self.input_city.text().strip()
-        # Save theme - map translated names back to theme codes
-        t = TRANSLATIONS.get(self.parent_win.current_lang, TRANSLATIONS["EN"])
-        translated_to_theme = {
-            t.get("theme_dark", "Dark"): "dark",
-            t.get("theme_light", "Light"): "light",
-            t.get("theme_gray", "Gray"): "gray",
-        }
-        self.parent_win.current_theme = translated_to_theme.get(
-            self.cb_theme.currentText(), "dark"
-        )
+
+        # Save theme mapping
+        theme_idx = self.cb_theme.currentIndex()
+        if theme_idx == 1:
+            self.parent_win.current_theme = "light"
+        elif theme_idx == 2:
+            self.parent_win.current_theme = "gray"
+        else:
+            self.parent_win.current_theme = "dark"
+
         self.parent_win.viz.set_dev_mode(self.parent_win.dev_mode)
 
         new_key = self.input_key.text().strip()
@@ -1726,6 +1698,9 @@ class SettingsDialog(QDialog):
                 with open(ENV_FILE, "w") as f:
                     f.write(f"GOOGLE_API_KEY={new_key}")
                 CURRENT_API_KEY = new_key
+                import os
+
+                os.environ["GOOGLE_API_KEY"] = new_key
             except Exception as e:
                 print(f"Error saving .env: {e}")
 
@@ -2156,14 +2131,27 @@ class MainWindow(QMainWindow):
                 pass
 
     def save_settings(self):
-        data = {
-            "lang": self.current_lang,
-            "voice": self.selected_voice,
-            "dev_mode": self.dev_mode,
-            "city": self.default_city,
-            "theme": self.current_theme,
-        }
+        data = {}
+        import os
+
+        if os.path.exists(SETTINGS_FILE):
+            try:
+                import json
+
+                with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except:
+                pass
+
+        data["lang"] = self.current_lang
+        data["voice"] = self.selected_voice
+        data["dev_mode"] = self.dev_mode
+        data["city"] = self.default_city
+        data["theme"] = self.current_theme
+        data["first_run_completed"] = True
         try:
+            import json
+
             with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=4)
         except:
@@ -2522,6 +2510,10 @@ if __name__ == "__main__":
         pass
     app = QApplication(sys.argv)
     app.setWindowIcon(QIcon("logo.png"))
+
+    from setup_wizard import run_wizard_if_needed
+
+    run_wizard_if_needed()
 
     # Check memory size and show cleanup dialog if needed
     try:
