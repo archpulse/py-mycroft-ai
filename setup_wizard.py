@@ -14,6 +14,11 @@ from PyQt6.QtWidgets import (
     QWizardPage,
 )
 
+AI_DATA_DIR = os.path.expanduser("~/.axinix/.ai")
+ENV_FILE = os.path.join(AI_DATA_DIR, ".env")
+SETTINGS_FILE = os.path.join(AI_DATA_DIR, "settings.json")
+PLUGIN_DAILY_LIMIT = 25
+
 WIZARD_TRANSLATIONS = {
     "EN": {
         "page1_title": "Hello! I am Mycroft 2.1",
@@ -26,7 +31,7 @@ WIZARD_TRANSLATIONS = {
         "page3_title": "Ready to talk?",
         "page3_desc": 'Almost there! Once the main window opens:\n\n1. Click the [INIT] button. I will load the language models and calibrate your microphone.\n2. Wait for the "Ready" status in the top bar.\n3. Simply say "Hey Mycroft" — I’ll hear you through my local openwakeword engine and wait for your command.',
         "page4_title": "Expanding Capabilities",
-        "page4_desc": "You can ask me to search GitHub plugins. I download code and run strict static checks, then save approved files to plugins/pending for manual review. I do not auto-run untrusted code.",
+        "page4_desc": f"You can ask me to search GitHub plugins. I first compare metadata and README previews, then ask for your confirmation before download. Only confirmed code that passes static checks is installed into plugins. For safety, plugin installs and AI security reviews are limited to {PLUGIN_DAILY_LIMIT} per day.",
         "page5_title": "Launching...",
         "page5_desc": 'Configuration complete! Py Mycroft 2.1 is now ready to serve on your system. If you have questions, check out our GitHub repository. Click "Finish" to launch the assistant!',
         "page_city_title": "Your Location",
@@ -45,7 +50,7 @@ WIZARD_TRANSLATIONS = {
         "page3_title": "Готовы к разговору?",
         "page3_desc": 'Почти готово! Как только откроется главное окно:\n\n1. Нажмите кнопку [INIT]. Я загружу языковые модели и откалибрую микрофон.\n2. Дождитесь статуса "System Online" наверху.\n3. Просто скажите "Hey Mycroft" — я услышу вас через локальный движок openwakeword и буду ждать команду.',
         "page4_title": "Расширение возможностей",
-        "page4_desc": "Вы можете попросить меня искать плагины на GitHub. Я скачиваю код, запускаю строгую статическую проверку и сохраняю безопасные файлы в plugins/pending для ручной проверки. Непроверенный код я автоматически не запускаю.",
+        "page4_desc": f"Вы можете попросить меня искать плагины на GitHub. Сначала я сравниваю метаданные и превью README, затем запрашиваю явное подтверждение перед скачиванием. В plugins устанавливается только подтвержденный код, прошедший статическую проверку. Для безопасности действует лимит: не более {PLUGIN_DAILY_LIMIT} установок и AI-проверок плагинов в день.",
         "page5_title": "Запуск...",
         "page5_desc": 'Настройка завершена! Py Mycroft 2.1 готов к работе. Если у вас есть вопросы, загляните в наш репозиторий на GitHub. Нажмите "Готово", чтобы запустить ассистента!',
         "page_city_title": "Ваша локация",
@@ -64,7 +69,7 @@ WIZARD_TRANSLATIONS = {
         "page3_title": "Готові до розмови?",
         "page3_desc": 'Майже готово! Щойно відкриється головне вікно:\n\n1. Натисніть кнопку [INIT]. Я завантажу мовні моделі та відкалібрую мікрофон.\n2. Дочекайтеся статусу "System Online" нагорі.\n3. Просто скажіть "Hey Mycroft" — я почую вас через локальний рушій openwakeword і чекатиму на команду.',
         "page4_title": "Розширення можливостей",
-        "page4_desc": "Ви можете попросити мене шукати плагіни на GitHub. Я завантажую код, виконую сувору статичну перевірку та зберігаю безпечні файли у plugins/pending для ручного перегляду. Неперевірений код я автоматично не запускаю.",
+        "page4_desc": f"Ви можете попросити мене шукати плагіни на GitHub. Спочатку я порівнюю метадані та прев'ю README, потім запитую явне підтвердження перед завантаженням. У plugins встановлюється лише підтверджений код, що пройшов статичну перевірку. Для безпеки діє ліміт: не більше {PLUGIN_DAILY_LIMIT} встановлень і AI-перевірок плагінів на день.",
         "page5_title": "Запуск...",
         "page5_desc": 'Налаштування завершено! Py Mycroft 2.1 готовий до роботи. Якщо у вас є питання, загляньте в наш репозиторий на GitHub. Натисніть "Готово", щоб запустити асистента!',
         "page_city_title": "Ваша локація",
@@ -83,7 +88,7 @@ WIZARD_TRANSLATIONS = {
         "page3_title": "Bereit zum Reden?",
         "page3_desc": 'Fast fertig! Im Hauptfenster:\n\n1. Klicken Sie auf [INIT].\n2. Warten Sie auf "System Online".\n3. Sagen Sie "Hey Mycroft".',
         "page4_title": "Funktionen erweitern",
-        "page4_desc": "Sie koennen mich bitten, Plugins auf GitHub zu suchen. Ich lade den Code, pruefe ihn statisch und speichere ihn in plugins/pending zur manuellen Freigabe. Ungeprueften Code starte ich nicht automatisch.",
+        "page4_desc": f"Sie koennen mich bitten, Plugins auf GitHub zu suchen. Ich lade den Code, pruefe ihn statisch und installiere nur Dateien automatisch, die die Sicherheitsrichtlinie bestehen. Aus Sicherheitsgruenden sind Plugin-Installationen und KI-Pruefungen auf {PLUGIN_DAILY_LIMIT} pro Tag begrenzt.",
         "page5_title": "Starten...",
         "page5_desc": 'Einrichtung abgeschlossen! Py Mycroft 2.1 ist bereit. Klicken Sie auf "Finish".',
         "page_city_title": "Ihr Standort",
@@ -102,7 +107,7 @@ WIZARD_TRANSLATIONS = {
         "page3_title": "¿Listo para hablar?",
         "page3_desc": '¡Casi listo! En la ventana principal:\n\n1. Haga clic en [INIT].\n2. Espere a "System Online".\n3. Diga "Hey Mycroft".',
         "page4_title": "Ampliando capacidades",
-        "page4_desc": "Puede pedirme buscar plugins en GitHub. Descargo el codigo, aplico verificacion estatica estricta y guardo resultados en plugins/pending para revision manual. No ejecuto codigo no verificado automaticamente.",
+        "page4_desc": f"Puede pedirme buscar plugins en GitHub. Descargo el codigo, aplico verificacion estatica estricta e instalo automaticamente solo archivos que pasen la politica de seguridad. Por seguridad, las instalaciones y revisiones AI de plugins estan limitadas a {PLUGIN_DAILY_LIMIT} por dia.",
         "page5_title": "Lanzamiento...",
         "page5_desc": '¡Configuración completa! Py Mycroft 2.1 está listo. Haga clic en "Finish".',
         "page_city_title": "Su ubicación",
@@ -121,7 +126,7 @@ WIZARD_TRANSLATIONS = {
         "page3_title": "Prêt à parler ?",
         "page3_desc": 'Presque terminé ! Dans la fenêtre principale :\n\n1. Cliquez sur [INIT].\n2. Attendez "System Online".\n3. Dites "Hey Mycroft".',
         "page4_title": "Extension des capacités",
-        "page4_desc": "Vous pouvez me demander de chercher des plugins sur GitHub. Je telecharge le code, j'applique une verification statique stricte et je le place dans plugins/pending pour revue manuelle. Je n'execute pas automatiquement le code non verifie.",
+        "page4_desc": f"Vous pouvez me demander de chercher des plugins sur GitHub. Je telecharge le code, j'applique une verification statique stricte et je n'installe automatiquement que les fichiers qui passent la politique de securite. Pour la securite, les installations et verifications IA de plugins sont limitees a {PLUGIN_DAILY_LIMIT} par jour.",
         "page5_title": "Lancement...",
         "page5_desc": 'Configuration terminée ! Py Mycroft 2.1 est prêt. Cliquez sur "Finish".',
         "page_city_title": "Votre emplacement",
@@ -140,7 +145,7 @@ WIZARD_TRANSLATIONS = {
         "page3_title": "准备好说话了吗？",
         "page3_desc": "快完成了！在主窗口中：\n\n1. 点击 [INIT]。\n2. 等待“System Online”。\n3. 说“Hey Mycroft”。",
         "page4_title": "扩展能力",
-        "page4_desc": "你可以让我在 GitHub 上搜索插件。我会下载代码、执行严格静态检查，并把结果保存到 plugins/pending 供人工审核。未审核代码不会自动执行。",
+        "page4_desc": f"你可以让我在 GitHub 上搜索插件。我会下载代码并执行严格静态检查，只会自动安装通过安全策略的文件。出于安全考虑，插件安装和 AI 安全检查每天最多 {PLUGIN_DAILY_LIMIT} 次。",
         "page5_title": "启动...",
         "page5_desc": "设置完成！Py Mycroft 2.1 已准备就绪。点击“Finish”。",
         "page_city_title": "您的位置",
@@ -159,7 +164,7 @@ WIZARD_TRANSLATIONS = {
         "page3_title": "話す準備はできましたか？",
         "page3_desc": "ほぼ完了です！メインウィンドウで：\n\n1. [INIT] をクリックします。\n2. 「System Online」を待ちます。\n3. 「Hey Mycroft」と言います。",
         "page4_title": "機能の拡張",
-        "page4_desc": "GitHubのプラグイン検索を依頼できます。コードを取得して厳格な静的チェックを行い、plugins/pending に保存して手動確認します。未確認コードは自動実行しません。",
+        "page4_desc": f"GitHubのプラグイン検索を依頼できます。コードを取得して厳格な静的チェックを行い、安全ポリシーを通過したファイルのみ自動インストールします。安全のため、プラグインのインストールとAIセキュリティ確認は1日{PLUGIN_DAILY_LIMIT}回までです。",
         "page5_title": "起動中...",
         "page5_desc": "セットアップ完了！Py Mycroft 2.1 の準備ができました。「Finish」をクリックしてください。",
         "page_city_title": "あなたの場所",
@@ -178,7 +183,7 @@ WIZARD_TRANSLATIONS = {
         "page3_title": "말할 준비가 되셨나요?",
         "page3_desc": '거의 다 되었습니다! 메인 창에서:\n\n1. [INIT]을 클릭합니다.\n2. "System Online"을 기다립니다.\n3. "Hey Mycroft"라고 말합니다.',
         "page4_title": "기능 확장",
-        "page4_desc": "GitHub plugin geomsageul butakhal su isseoyo. Kodeureul daunbatgo eomgyeokhan jeongjeok geomsa hu plugins/pendinge jeojanghamnida. geomjeungdoen anneun kodeuneun jadongeuro silhaenghaji anseumnida.",
+        "page4_desc": f"GitHub plugin geomsageul butakhal su isseoyo. Kodeureul daunbatgo eomgyeokhan jeongjeok geomsa hu boan jeongchaegeul tonggwahan pailman jadongeuro seolchihamnida. Boaneul wihae plugin seolchi mit AI geomsa neun haru choedae {PLUGIN_DAILY_LIMIT}hoimnida.",
         "page5_title": "시작...",
         "page5_desc": '설정 완료! Py Mycroft 2.1이 준비되었습니다. "Finish"를 클릭하세요.',
         "page_city_title": "위치",
@@ -197,7 +202,7 @@ WIZARD_TRANSLATIONS = {
         "page3_title": "Pronto para falar?",
         "page3_desc": 'Quase lá! Na janela principal:\n\n1. Clique em [INIT].\n2. Aguarde "System Online".\n3. Diga "Hey Mycroft".',
         "page4_title": "Expandindo Recursos",
-        "page4_desc": "Voce pode pedir busca de plugins no GitHub. Eu baixo o codigo, aplico verificacao estatica rigorosa e salvo em plugins/pending para revisao manual. Codigo nao verificado nao e executado automaticamente.",
+        "page4_desc": f"Voce pode pedir busca de plugins no GitHub. Eu baixo o codigo, aplico verificacao estatica rigorosa e instalo automaticamente apenas arquivos que passam na politica de seguranca. Por seguranca, instalacoes e revisoes de plugins por IA sao limitadas a {PLUGIN_DAILY_LIMIT} por dia.",
         "page5_title": "Iniciando...",
         "page5_desc": 'Configuração concluída! Py Mycroft 2.1 está pronto. Clique em "Finish".',
         "page_city_title": "Sua localização",
@@ -216,7 +221,7 @@ WIZARD_TRANSLATIONS = {
         "page3_title": "Pronto a parlare?",
         "page3_desc": 'Quasi finito! Nella finestra principale:\n\n1. Clicca su [INIT].\n2. Attendi "System Online".\n3. Dì "Hey Mycroft".',
         "page4_title": "Espansione delle capacità",
-        "page4_desc": "Puoi chiedermi di cercare plugin su GitHub. Scarico il codice, eseguo controlli statici rigorosi e salvo in plugins/pending per revisione manuale. Il codice non verificato non viene eseguito automaticamente.",
+        "page4_desc": f"Puoi chiedermi di cercare plugin su GitHub. Scarico il codice, eseguo controlli statici rigorosi e installo automaticamente solo i file che superano la politica di sicurezza. Per sicurezza, installazioni e revisioni AI dei plugin sono limitate a {PLUGIN_DAILY_LIMIT} al giorno.",
         "page5_title": "Avvio...",
         "page5_desc": 'Configurazione completata! Py Mycroft 2.1 è pronto. Clicca su "Finish".',
         "page_city_title": "La tua posizione",
@@ -362,7 +367,7 @@ class PluginSystemPage(QWizardPage):
         layout = QVBoxLayout()
 
         self.label = QLabel(
-            "You can ask me to search GitHub plugins. I download code, run strict static checks, and save results to plugins/pending for manual review. Untrusted code is not auto-executed."
+            "You can ask me to search GitHub plugins. I first compare metadata and README previews, then ask for your confirmation before download. Only confirmed code that passes static checks is installed into plugins."
         )
         self.label.setWordWrap(True)
         self.label.setMargin(10)
@@ -520,16 +525,17 @@ class SetupWizard(QWizard):
         theme_val = theme_map.get(theme_idx, "dark")
 
         if api_key:
-            with open(".env", "w", encoding="utf-8") as f:
+            os.makedirs(AI_DATA_DIR, exist_ok=True)
+            with open(ENV_FILE, "w", encoding="utf-8") as f:
                 f.write(f"GOOGLE_API_KEY={api_key}\n")
 
             # Update running environment variable so the main process immediately sees it
             os.environ["GOOGLE_API_KEY"] = api_key
 
         settings = {}
-        if os.path.exists("settings.json"):
+        if os.path.exists(SETTINGS_FILE):
             try:
-                with open("settings.json", "r", encoding="utf-8") as f:
+                with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
                     settings = json.load(f)
             except (json.JSONDecodeError, OSError) as e:
                 print(f"Setup settings read error: {e}")
@@ -539,7 +545,8 @@ class SetupWizard(QWizard):
         settings["city"] = city if city else ""
         settings["first_run_completed"] = True
 
-        with open("settings.json", "w", encoding="utf-8") as f:
+        os.makedirs(AI_DATA_DIR, exist_ok=True)
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
             json.dump(settings, f, indent=4)
 
         super().accept()
@@ -547,9 +554,9 @@ class SetupWizard(QWizard):
 
 def run_wizard_if_needed():
     first_run = True
-    if os.path.exists("settings.json"):
+    if os.path.exists(SETTINGS_FILE):
         try:
-            with open("settings.json", "r", encoding="utf-8") as f:
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 if data.get("first_run_completed"):
                     first_run = False
